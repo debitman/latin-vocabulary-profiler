@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 
 # --- CONFIGURATION ---
 HAVERFORD_CSV_PATH = "haverford_ranks.csv"
-DEUCALION_API_URL = "https://psl.eu"
+DEUCALION_API_URL = "https://dh.chartes.psl.eu/deucalion/latin/api"
 
 # --- PAGE SETUP ---
 st.set_page_config(page_title="Latin Curriculum Analytics", layout="centered")
