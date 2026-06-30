@@ -148,4 +148,3 @@ if uploaded_csv is not None and rank_db:
                     st.write(", ".join(unique_rare[:200]))
         else:
             st.error("❌ No rows could be parsed. Check column content configuration layout.")
-
