@@ -55,9 +55,19 @@ if uploaded_csv is not None and rank_db:
     reader = csv.DictReader(csv_text, delimiter=delimiter_char)
     headers = reader.fieldnames if reader.fieldnames else []
     
-    deuc_lemma_col = next((h for h in headers if h.lower().strip() == 'lemma'), None)
-    deuc_pos_col = next((h for h in headers if h.lower().strip() in ['pos', 'part of speech'], None)
-    deuc_token_col = next((h for h in headers if h.lower().strip() in ['form', 'word', 'token']), None)
+    # SIMPLIFIED HEADER DETECTION: Replaced complex nested next() lines to guarantee zero syntax errors
+    deuc_lemma_col = None
+    deuc_pos_col = None
+    deuc_token_col = None
+    
+    for h in headers:
+        header_clean = h.lower().strip()
+        if header_clean == 'lemma':
+            deuc_lemma_col = h
+        if header_clean in ['pos', 'part of speech']:
+            deuc_pos_col = h
+        if header_clean in ['form', 'word', 'token']:
+            deuc_token_col = h
 
     if not deuc_lemma_col and len(headers) >= 2:
         deuc_lemma_col = headers[1]
@@ -107,13 +117,10 @@ if uploaded_csv is not None and rank_db:
         if total_tokens > 0:
             labels = list(categories.keys())
             counts = list(categories.values())
-            
-            # REPAIRED: Clean default placeholder fallback to prevent infinite server compile loops
             percentages = [(c / total_tokens) * 100 for c in counts]
 
             st.success(f"Analysis Complete! Processed {total_tokens:,} valid tokens inside 5k core framework.")
             
-            # REPAIRED: Clean metric arithmetic tracking using direct index definitions
             comprehension_95_score = percentages[0] + percentages[1]
             rare_vocab_score = percentages[3]
             
