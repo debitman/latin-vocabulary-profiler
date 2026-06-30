@@ -17,11 +17,19 @@ st.write("Upload a candidate reading text to evaluate its B2 curriculum relevanc
 def load_haverford_db(csv_path):
     rank_map = {}
     try:
-        with open(csv_path, mode='r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
+        # 'utf-8-sig' cleanly strips out invisible Excel/Notepad BOM formatting bugs
+        with open(csv_path, mode='r', encoding='utf-8-sig') as f:
+            reader = csv.DictReader(f, delimiter=',')
+            
             for row in reader:
-                lemma = row["lemma"].lower().strip()
-                rank_map[lemma] = int(row["bridge_rank"])
+                # Safely parse matching keys while completely ignoring empty trailing fields
+                if row.get("lemma") and row.get("bridge_rank"):
+                    lemma = row["lemma"].lower().strip()
+                    try:
+                        rank_map[lemma] = int(row["bridge_rank"])
+                    except ValueError:
+                        continue # Skips any broken lines cleanly
+                        
     except FileNotFoundError:
         st.error(f"Error: Database file '{csv_path}' not found in web server directory.")
     return rank_map
@@ -69,7 +77,7 @@ if uploaded_file is not None and rank_db:
                 continue
                 
             if "界" in lemma:
-                lemma = lemma.split("界")[0]
+                lemma = lemma.split("界")[0] # Grab headword, drop enclitic
                 
             total_tokens += 1
             rank = rank_db.get(lemma, 9999)
@@ -84,22 +92,23 @@ if uploaded_file is not None and rank_db:
                 categories["Rare Vocabulary\n(Outside Top 5000)"] += 1
                 rare_words_list.append((token, lemma))
 
-        # Calculate Percentages
+        # Calculate Percentages (Fixed syntax calculation)
         labels = list(categories.keys())
         counts = list(categories.values())
-        percentages = [(c / total_tokens) * 100 for c in counts] if total_tokens else [0]*4
+        percentages = [(c / total_tokens) * 100 for c in counts] if total_tokens else [0, 0, 0, 0]
         
         # --- RENDER WEB DASHBOARD ---
         st.success(f"Analysis Complete! Processed {total_tokens:,} valid word tokens.")
         
-        # Key Metrics Row
+        # Key Metrics calculation
         comprehension_95_score = percentages[0] + percentages[1]
+        rare_vocab_score = percentages[3]
         
         col1, col2 = st.columns(2)
         with col1:
             st.metric(label="95% Rule Comprehension Score", value=f"{comprehension_95_score:.1f}%")
         with col2:
-            st.metric(label="Rare Vocabulary Rate", value=f"{percentages[3]:.1f}%")
+            st.metric(label="Rare Vocabulary Rate", value=f"{rare_vocab_score:.1f}%")
             
         if comprehension_95_score >= 95.0:
             st.balloons()
@@ -120,7 +129,6 @@ if uploaded_file is not None and rank_db:
         ax.set_ylim(0, 100)
         ax.grid(axis='y', linestyle='--', alpha=0.5)
         
-        # Render the matplotlib plot directly inside the web browser page
         st.pyplot(fig)
         
         # Expandable list showing rare words to help teachers make custom glossaries
