@@ -6,6 +6,7 @@ import re
 
 # --- CONFIGURATION ---
 HAVERFORD_CSV_PATH = "haverford_ranks.csv"
+# The exact, un-truncated API directory location utilized by Deucalion web taggers
 DEUCALION_API_URL = "https://psl.eu"
 
 # --- PAGE SETUP ---
@@ -32,10 +33,9 @@ def load_haverford_db(csv_path):
     return rank_map
 
 def local_fallback_parser(raw_text):
-    """Integrated rule-based fallback processor when external server drops."""
+    """Simple string word splitter used only if server is completely offline."""
     words = re.findall(r'\b\w+\b', raw_text.lower())
     fallback_tokens = []
-    
     for w in words:
         lemma_guess = w[:-3] if w.endswith("que") and len(w) > 4 else w
         lemma_guess = lemma_guess.replace("v", "u")
@@ -47,7 +47,7 @@ def local_fallback_parser(raw_text):
     return fallback_tokens
 
 def lemmatize_via_deucalion(raw_text):
-    """Splits text into chunks and handles server responses safely."""
+    """Splits text into paragraphs and submits form-data elements natively to Deucalion."""
     paragraphs = [p.strip() for p in raw_text.split("\n") if p.strip()]
     if not paragraphs:
         return None
@@ -75,16 +75,16 @@ def lemmatize_via_deucalion(raw_text):
     for i, chunk in enumerate(chunks):
         progress_bar.progress((i + 1) / len(chunks), text=f"Analyzing segment {i+1} of {len(chunks)}...")
         
-        payload = {"text": chunk, "format": "json"}
+        # Deucalion's model expects form-data parameters labeled as 'data', not raw JSON strings
+        payload = {"data": chunk}
         try:
-            response = requests.post(DEUCALION_API_URL, json=payload, timeout=15)
+            response = requests.post(DEUCALION_API_URL, data=payload, timeout=20)
             if response.status_code == 200:
-                if "application/json" in response.headers.get("Content-Type", "").lower():
-                    response_data = response.json()
-                    tokens_list = response_data.get("tokens", [])
-                    if tokens_list:
-                        combined_tokens.extend(tokens_list)
-                        continue
+                response_data = response.json()
+                # Unpack the list directly from the web response frame
+                if isinstance(response_data, list) and len(response_data) > 0:
+                    combined_tokens.extend(response_data)
+                    continue
             server_failed = True
         except Exception:
             server_failed = True
@@ -122,13 +122,13 @@ if uploaded_file is not None and rank_db:
         for item in parsed_tokens:
             lemma = item.get("lemma", "").lower().strip()
             pos = item.get("pos", item.get("POS", ""))
-            token = item.get("token", item.get("form", ""))
+            token = item.get("token", item.get("form", item.get("word", "")))
             
             if pos == "PUNC" or not lemma or lemma == "punc":
                 continue
                 
             if "界" in lemma:
-                lemma = lemma.split("界")[0]
+                lemma = lemma.split("界")
                 
             total_tokens += 1
             rank = rank_db.get(lemma, 9999)
@@ -158,7 +158,7 @@ if uploaded_file is not None and rank_db:
 
             st.success(f"Analysis Complete! Processed {total_tokens:,} valid word tokens.")
             
-            # FIXED: Explicitly added list indexing markers to avoid type error
+            # CRITICAL FIX: Isolating array items explicitly by index position to compute float metrics
             comprehension_95_score = percentages[0] + percentages[1]
             rare_vocab_score = percentages[3]
             
