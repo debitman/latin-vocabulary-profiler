@@ -58,16 +58,26 @@ def lemmatize_via_deucalion(raw_text):
             
         progress_bar.progress((i + 1) / len(chunks), text=f"Processing segment {i+1} of {len(chunks)}...")
         
-        # Payload format expected by the /api/latin/lemmatize endpoint
         payload = {"text": chunk, "format": "json"}
         try:
             response = requests.post(DEUCALION_API_URL, json=payload, timeout=30)
             if response.status_code == 200:
                 response_data = response.json()
-                tokens_list = response_data.get("tokens", [])
+                
+                # Dynamic Envelope Handling: Safely navigate Deucalion's structural shifts
+                if isinstance(response_data, dict):
+                    tokens_list = response_data.get("tokens", response_data.get("form", response_data.get("test", [])))
+                elif isinstance(response_data, list):
+                    tokens_list = response_data
+                else:
+                    tokens_list = []
+                    
                 if tokens_list:
                     combined_tokens.extend(tokens_list)
-        except Exception:
+            else:
+                st.sidebar.error(f"Segment {i+1} failed with server code: {response.status_code}")
+        except Exception as e:
+            st.sidebar.warning(f"Connection skipped on segment {i+1}: {str(e)}")
             continue
             
     progress_bar.empty()
@@ -95,15 +105,16 @@ if uploaded_file is not None and rank_db:
         rare_words_list = []
         
         for item in parsed_tokens:
+            # Handle key variations dynamically ('pos' vs 'POS', 'token' vs 'word')
             lemma = item.get("lemma", "").lower().strip()
-            pos = item.get("pos", "")
-            token = item.get("token", "")
+            pos = item.get("pos", item.get("POS", ""))
+            token = item.get("token", item.get("form", item.get("word", "")))
             
             if pos == "PUNC" or not lemma or lemma == "punc":
                 continue
                 
             if "界" in lemma:
-                lemma = lemma.split("界")[0]
+                lemma = lemma.split("界")
                 
             total_tokens += 1
             rank = rank_db.get(lemma, 9999)
@@ -118,43 +129,47 @@ if uploaded_file is not None and rank_db:
                 categories["Rare Vocabulary\n(Outside Top 5000)"] += 1
                 rare_words_list.append((token, lemma))
 
-        labels = list(categories.keys())
-        counts = list(categories.values())
-        
-        # FIXED: Added fallback list for the else branch
-        percentages = [(c / total_tokens) * 100 for c in counts] if total_tokens else [0, 0, 0, 0]
+        if total_tokens > 0:
+            labels = list(categories.keys())
+            counts = list(categories.values())
+            percentages = [(c / total_tokens) * 100 for c in counts]
 
-        st.success(f"Analysis Complete! Processed {total_tokens:,} valid word tokens.")
-        
-        comprehension_95_score = percentages[0] + percentages[1]
-        rare_vocab_score = percentages[3]
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric(label="95% Rule Comprehension Score", value=f"{comprehension_95_score:.1f}%")
-        with col2:
-            st.metric(label="Rare Vocabulary Rate", value=f"{rare_vocab_score:.1f}%")
+            st.success(f"Analysis Complete! Processed {total_tokens:,} valid word tokens.")
             
-        if comprehension_95_score >= 95.0:
-            st.balloons()
-            st.success("✅ This text complies with the 95% comprehension rule for your B2 curriculum!")
+            # Fixed list indexing arithmetic
+            comprehension_95_score = percentages[0] + percentages[1]
+            rare_vocab_score = percentages[3]
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric(label="95% Rule Comprehension Score", value=f"{comprehension_95_score:.1f}%")
+            with col2:
+                st.metric(label="Rare Vocabulary Rate", value=f"{rare_vocab_score:.1f}%")
+                
+            if comprehension_95_score >= 95.0:
+                st.balloons()
+                st.success("✅ This text complies with the 95% comprehension rule for your B2 curriculum!")
+            else:
+                st.warning("⚠️ Warning: This text fails the 95% rule. Vocabulary density is too complex for independent reading.")
+
+            colors = ['#2ecc71', '#3498db', '#f1c40f', '#e74c3c']
+            fig, ax = plt.subplots(figsize=(10, 5))
+            bars = ax.bar(labels, percentages, color=colors, edgecolor='grey', width=0.5)
+            
+            for bar, percent in zip(bars, percentages):
+                yval = bar.get_height()
+                ax.text(bar.get_x() + bar.get_width()/2, yval + 1, f"{percent:.1f}%", ha='center', va='bottom', fontweight='bold')
+                
+            ax.set_ylabel("Percentage of Total Running Tokens (%)")
+            ax.set_ylim(0, 100)
+            ax.grid(axis='y', linestyle='--', alpha=0.5)
+            st.pyplot(fig)
+            
+            if rare_words_list:
+                with st.expander("🔍 View Rare Words Outside Top 5000 (Requires Pre-Teaching or Glossing)"):
+                    unique_rare = sorted(list(set([f"{t} ({l})" for t, l in rare_words_list])))
+                    st.write(", ".join(unique_rare[:200]))
         else:
-            st.warning("⚠️ Warning: This text fails the 95% rule. Vocabulary density is too complex for independent reading.")
-
-        colors = ['#2ecc71', '#3498db', '#f1c40f', '#e74c3c']
-        fig, ax = plt.subplots(figsize=(10, 5))
-        bars = ax.bar(labels, percentages, color=colors, edgecolor='grey', width=0.5)
-        
-        for bar, percent in zip(bars, percentages):
-            yval = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2, yval + 1, f"{percent:.1f}%", ha='center', va='bottom', fontweight='bold')
-            
-        ax.set_ylabel("Percentage of Total Running Tokens (%)")
-        ax.set_ylim(0, 100)
-        ax.grid(axis='y', linestyle='--', alpha=0.5)
-        st.pyplot(fig)
-        
-        if rare_words_list:
-            with st.expander("🔍 View Rare Words Outside Top 5000 (Requires Pre-Teaching or Glossing)"):
-                unique_rare = sorted(list(set([f"{t} ({l})" for t, l in rare_words_list])))
-                st.write(", ".join(unique_rare[:200]))
+            st.error("❌ The parser completed, but extracted zero valid Latin vocabulary words. Check text format.")
+    else:
+        st.error("❌ Connection established but Deucalion returned an empty token stream. Try re-uploading.")
