@@ -5,7 +5,6 @@ import matplotlib.pyplot as plt
 
 # --- CONFIGURATION ---
 HAVERFORD_CSV_PATH = "haverford_ranks.csv"
-# Pointing directly to the parent web layer endpoint to avoid hidden API 404 pathing bugs
 DEUCALION_API_URL = "https://psl.eu"
 
 # --- PAGE SETUP ---
@@ -32,17 +31,14 @@ def load_haverford_db(csv_path):
     return rank_map
 
 def lemmatize_via_deucalion(raw_text):
-    """
-    Chunks large texts, executes a form POST request directly to the 
-    main endpoint layer, and collects token dict arrays.
-    """
+    """Splits text into chunks and posts JSON arrays to Deucalion's main API endpoint."""
     paragraphs = raw_text.split("\n")
     chunks = []
     current_chunk = []
     current_length = 0
     
     for p in paragraphs:
-        if current_length + len(p) > 2000 and current_chunk:
+        if current_length + len(p) > 1500 and current_chunk:
             chunks.append("\n".join(current_chunk))
             current_chunk = [p]
             current_length = len(p)
@@ -60,28 +56,17 @@ def lemmatize_via_deucalion(raw_text):
         if not chunk.strip():
             continue
             
-        progress_bar.progress((i + 1) / len(chunks), text=f"Processing text chunk {i+1} of {len(chunks)}...")
+        progress_bar.progress((i + 1) / len(chunks), text=f"Processing segment {i+1} of {len(chunks)}...")
         
-        # Packaging the payload exactly as the text-box form engine maps data
-        payload = {"data": chunk}
+        # Payload format expected by the /api/latin/lemmatize endpoint
+        payload = {"text": chunk, "format": "json"}
         try:
-            # Adding an explicit headers signature mimics browser interface interaction
-            headers = {"Accept": "application/json"}
-            response = requests.post(DEUCALION_API_URL, data=payload, headers=headers, timeout=45)
-            
+            response = requests.post(DEUCALION_API_URL, json=payload, timeout=30)
             if response.status_code == 200:
-                chunk_data = response.json()
-                if isinstance(chunk_data, list):
-                    combined_tokens.extend(chunk_data)
-            else:
-                # Secondary Fallback: Try targeting the base engine api subroute if form rejects direct json requests
-                alt_url = "https://psl.eu"
-                alt_response = requests.post(alt_url, json={"text": chunk, "format": "json"}, timeout=30)
-                if alt_response.status_code == 200:
-                    alt_data = alt_response.json()
-                    tokens_list = alt_data.get("tokens", alt_data)
-                    if isinstance(tokens_list, list):
-                        combined_tokens.extend(tokens_list)
+                response_data = response.json()
+                tokens_list = response_data.get("tokens", [])
+                if tokens_list:
+                    combined_tokens.extend(tokens_list)
         except Exception:
             continue
             
@@ -110,16 +95,15 @@ if uploaded_file is not None and rank_db:
         rare_words_list = []
         
         for item in parsed_tokens:
-            # Handle variable capitalization keys between Deucalion web layers ('POS' vs 'pos')
-            lemma = item.get("lemma", item.get("lemma", "")).lower().strip()
-            pos = item.get("POS", item.get("pos", ""))
-            token = item.get("form", item.get("word", ""))
+            lemma = item.get("lemma", "").lower().strip()
+            pos = item.get("pos", "")
+            token = item.get("token", "")
             
             if pos == "PUNC" or not lemma or lemma == "punc":
                 continue
                 
             if "界" in lemma:
-                lemma = lemma.split("界")
+                lemma = lemma.split("界")[0]
                 
             total_tokens += 1
             rank = rank_db.get(lemma, 9999)
@@ -136,12 +120,14 @@ if uploaded_file is not None and rank_db:
 
         labels = list(categories.keys())
         counts = list(categories.values())
-        percentages = [(c / total_tokens) * 100 for c in counts] if total_tokens else
+        
+        # FIXED: Added fallback list for the else branch
+        percentages = [(c / total_tokens) * 100 for c in counts] if total_tokens else [0, 0, 0, 0]
 
         st.success(f"Analysis Complete! Processed {total_tokens:,} valid word tokens.")
         
-        comprehension_95_score = percentages + percentages
-        rare_vocab_score = percentages
+        comprehension_95_score = percentages[0] + percentages[1]
+        rare_vocab_score = percentages[3]
         
         col1, col2 = st.columns(2)
         with col1:
