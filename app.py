@@ -32,21 +32,13 @@ def load_haverford_db(csv_path):
     return rank_map
 
 def local_fallback_parser(raw_text):
-    """
-    An integrated rule-based fallback processor. If the external server drops,
-    this slices tokens and isolates base forms using standard orthography rules
-    to ensure the dashboard always renders your curriculum charts successfully.
-    """
-    # Simple regex to isolate pure alphanumeric tokens, discarding punctuation
+    """Integrated rule-based fallback processor when external server drops."""
     words = re.findall(r'\b\w+\b', raw_text.lower())
     fallback_tokens = []
     
     for w in words:
-        # Clean common enclitics like -que natively
         lemma_guess = w[:-3] if w.endswith("que") and len(w) > 4 else w
-        # Handle standard variations to increase dictionary hit rate
         lemma_guess = lemma_guess.replace("v", "u")
-        
         fallback_tokens.append({
             "lemma": lemma_guess,
             "pos": "UNKNOWN",
@@ -55,7 +47,7 @@ def local_fallback_parser(raw_text):
     return fallback_tokens
 
 def lemmatize_via_deucalion(raw_text):
-    """Splits text into chunks and handles server responses safely, dropping back to local parsing if needed."""
+    """Splits text into chunks and handles server responses safely."""
     paragraphs = [p.strip() for p in raw_text.split("\n") if p.strip()]
     if not paragraphs:
         return None
@@ -87,15 +79,12 @@ def lemmatize_via_deucalion(raw_text):
         try:
             response = requests.post(DEUCALION_API_URL, json=payload, timeout=15)
             if response.status_code == 200:
-                # Double-check that the server sent back actual JSON text before calling .json()
                 if "application/json" in response.headers.get("Content-Type", "").lower():
                     response_data = response.json()
                     tokens_list = response_data.get("tokens", [])
                     if tokens_list:
                         combined_tokens.extend(tokens_list)
                         continue
-            
-            # If the response isn't JSON or status isn't 200, log it and trigger fallback
             server_failed = True
         except Exception:
             server_failed = True
@@ -103,7 +92,6 @@ def lemmatize_via_deucalion(raw_text):
             
     progress_bar.empty()
     
-    # If the external server failed on any chunk, automatically activate the local fallback processor
     if server_failed or not combined_tokens:
         st.sidebar.info("💡 Server busy. Switched automatically to local fail-safe parsing engine.")
         return local_fallback_parser(raw_text)
@@ -140,12 +128,11 @@ if uploaded_file is not None and rank_db:
                 continue
                 
             if "界" in lemma:
-                lemma = lemma.split("界")
+                lemma = lemma.split("界")[0]
                 
             total_tokens += 1
             rank = rank_db.get(lemma, 9999)
             
-            # Smart dictionary matching fallback for common suffix inflections
             if rank == 9999 and len(lemma) > 3:
                 for suffix in ['m', 's', 't', 'nt', 're', 'is', 'i', 'ae', 'am', 'um', 'or']:
                     if lemma.endswith(suffix):
@@ -171,8 +158,9 @@ if uploaded_file is not None and rank_db:
 
             st.success(f"Analysis Complete! Processed {total_tokens:,} valid word tokens.")
             
-            comprehension_95_score = percentages + percentages
-            rare_vocab_score = percentages
+            # FIXED: Explicitly added list indexing markers to avoid type error
+            comprehension_95_score = percentages[0] + percentages[1]
+            rare_vocab_score = percentages[3]
             
             col1, col2 = st.columns(2)
             with col1:
@@ -203,4 +191,3 @@ if uploaded_file is not None and rank_db:
                 with st.expander("🔍 View Rare Words Outside Top 5000 (Requires Pre-Teaching or Glossing)"):
                     unique_rare = sorted(list(set([f"{t} ({l})" for t, l in rare_words_list])))
                     st.write(", ".join(unique_rare[:200]))
-
