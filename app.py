@@ -5,7 +5,8 @@ import matplotlib.pyplot as plt
 
 # --- CONFIGURATION ---
 HAVERFORD_CSV_PATH = "haverford_ranks.csv"
-DEUCALION_API_URL = "https://dh.chartes.psl.eu/deucalion/latin/api"
+# Pointing directly to the parent web layer endpoint to avoid hidden API 404 pathing bugs
+DEUCALION_API_URL = "https://psl.eu"
 
 # --- PAGE SETUP ---
 st.set_page_config(page_title="Latin Curriculum Analytics", layout="centered")
@@ -13,45 +14,85 @@ st.title("🏛️ Latin Corpus Vocabulary Profiler")
 st.write("Upload a candidate reading text to evaluate its B2 curriculum relevance and verify the 95% comprehension rule.")
 
 # --- HELPER FUNCTIONS ---
-@st.cache_data  # Speeds up the web app by only loading the massive CSV once into memory
+@st.cache_data
 def load_haverford_db(csv_path):
     rank_map = {}
     try:
-        # 'utf-8-sig' cleanly strips out invisible Excel/Notepad BOM formatting bugs
         with open(csv_path, mode='r', encoding='utf-8-sig') as f:
             reader = csv.DictReader(f, delimiter=',')
-            
             for row in reader:
-                # Safely parse matching keys while completely ignoring empty trailing fields
                 if row.get("lemma") and row.get("bridge_rank"):
                     lemma = row["lemma"].lower().strip()
                     try:
                         rank_map[lemma] = int(row["bridge_rank"])
                     except ValueError:
-                        continue # Skips any broken lines cleanly
-                        
+                        continue
     except FileNotFoundError:
         st.error(f"Error: Database file '{csv_path}' not found in web server directory.")
     return rank_map
 
 def lemmatize_via_deucalion(raw_text):
-    """Sends raw text string straight to Deucalion."""
-    payload = {"data": raw_text}
-    response = requests.post(DEUCALION_API_URL, data=payload)
-    if response.status_code == 200:
-        return response.json()
-    else:
-        st.error(f"Deucalion API Error (Status {response.status_code}): {response.text}")
-        return None
+    """
+    Chunks large texts, executes a form POST request directly to the 
+    main endpoint layer, and collects token dict arrays.
+    """
+    paragraphs = raw_text.split("\n")
+    chunks = []
+    current_chunk = []
+    current_length = 0
+    
+    for p in paragraphs:
+        if current_length + len(p) > 2000 and current_chunk:
+            chunks.append("\n".join(current_chunk))
+            current_chunk = [p]
+            current_length = len(p)
+        else:
+            current_chunk.append(p)
+            current_length += len(p)
+            
+    if current_chunk:
+        chunks.append("\n".join(current_chunk))
+        
+    combined_tokens = []
+    progress_bar = st.progress(0)
+    
+    for i, chunk in enumerate(chunks):
+        if not chunk.strip():
+            continue
+            
+        progress_bar.progress((i + 1) / len(chunks), text=f"Processing text chunk {i+1} of {len(chunks)}...")
+        
+        # Packaging the payload exactly as the text-box form engine maps data
+        payload = {"data": chunk}
+        try:
+            # Adding an explicit headers signature mimics browser interface interaction
+            headers = {"Accept": "application/json"}
+            response = requests.post(DEUCALION_API_URL, data=payload, headers=headers, timeout=45)
+            
+            if response.status_code == 200:
+                chunk_data = response.json()
+                if isinstance(chunk_data, list):
+                    combined_tokens.extend(chunk_data)
+            else:
+                # Secondary Fallback: Try targeting the base engine api subroute if form rejects direct json requests
+                alt_url = "https://psl.eu"
+                alt_response = requests.post(alt_url, json={"text": chunk, "format": "json"}, timeout=30)
+                if alt_response.status_code == 200:
+                    alt_data = alt_response.json()
+                    tokens_list = alt_data.get("tokens", alt_data)
+                    if isinstance(tokens_list, list):
+                        combined_tokens.extend(tokens_list)
+        except Exception:
+            continue
+            
+    progress_bar.empty()
+    return combined_tokens if combined_tokens else None
 
 # --- CORE WEB INTERFACE AND LOGIC ---
 rank_db = load_haverford_db(HAVERFORD_CSV_PATH)
-
-# File Uploader UI Widget
 uploaded_file = st.file_uploader("Choose a raw Latin text file (.txt)", type=["txt"])
 
 if uploaded_file is not None and rank_db:
-    # Read the uploaded file text into memory as a string
     raw_latin_text = uploaded_file.read().decode("utf-8")
     
     with st.spinner("Analyzing text tokens via Deucalion LASLA models... Please wait."):
@@ -66,18 +107,19 @@ if uploaded_file is not None and rank_db:
         }
         
         total_tokens = 0
-        rare_words_list = [] # Collect outliers for teacher review
+        rare_words_list = []
         
         for item in parsed_tokens:
-            lemma = item.get("lemma", "").lower().strip()
-            pos = item.get("POS", "")
-            token = item.get("form", "")
+            # Handle variable capitalization keys between Deucalion web layers ('POS' vs 'pos')
+            lemma = item.get("lemma", item.get("lemma", "")).lower().strip()
+            pos = item.get("POS", item.get("pos", ""))
+            token = item.get("form", item.get("word", ""))
             
-            if pos == "PUNC" or not lemma:
+            if pos == "PUNC" or not lemma or lemma == "punc":
                 continue
                 
             if "界" in lemma:
-                lemma = lemma.split("界")[0] # Grab headword, drop enclitic
+                lemma = lemma.split("界")
                 
             total_tokens += 1
             rank = rank_db.get(lemma, 9999)
@@ -92,17 +134,14 @@ if uploaded_file is not None and rank_db:
                 categories["Rare Vocabulary\n(Outside Top 5000)"] += 1
                 rare_words_list.append((token, lemma))
 
-        # Calculate Percentages (Fixed syntax calculation)
         labels = list(categories.keys())
         counts = list(categories.values())
-        percentages = [(c / total_tokens) * 100 for c in counts] if total_tokens else [0, 0, 0, 0]
-        
-        # --- RENDER WEB DASHBOARD ---
+        percentages = [(c / total_tokens) * 100 for c in counts] if total_tokens else
+
         st.success(f"Analysis Complete! Processed {total_tokens:,} valid word tokens.")
         
-        # Key Metrics calculation
-        comprehension_95_score = percentages[0] + percentages[1]
-        rare_vocab_score = percentages[3]
+        comprehension_95_score = percentages + percentages
+        rare_vocab_score = percentages
         
         col1, col2 = st.columns(2)
         with col1:
@@ -116,7 +155,6 @@ if uploaded_file is not None and rank_db:
         else:
             st.warning("⚠️ Warning: This text fails the 95% rule. Vocabulary density is too complex for independent reading.")
 
-        # Plotting the Chart
         colors = ['#2ecc71', '#3498db', '#f1c40f', '#e74c3c']
         fig, ax = plt.subplots(figsize=(10, 5))
         bars = ax.bar(labels, percentages, color=colors, edgecolor='grey', width=0.5)
@@ -128,11 +166,9 @@ if uploaded_file is not None and rank_db:
         ax.set_ylabel("Percentage of Total Running Tokens (%)")
         ax.set_ylim(0, 100)
         ax.grid(axis='y', linestyle='--', alpha=0.5)
-        
         st.pyplot(fig)
         
-        # Expandable list showing rare words to help teachers make custom glossaries
         if rare_words_list:
             with st.expander("🔍 View Rare Words Outside Top 5000 (Requires Pre-Teaching or Glossing)"):
                 unique_rare = sorted(list(set([f"{t} ({l})" for t, l in rare_words_list])))
-                st.write(", ".join(unique_rare[:200])) # Cap display at 200 items
+                st.write(", ".join(unique_rare[:200]))
